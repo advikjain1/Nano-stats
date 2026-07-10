@@ -1,132 +1,197 @@
-"""
-nanda-textstats
-================
+# SPDX-License-Identifier: Apache-2.0
+"""Delegatable auth plugin -- capability tokens with cascading revocation."""
 
-Problem
--------
-AI agents increasingly generate, summarize, and publish text on behalf of
-users -- replies, articles, documentation, social posts -- but have no fast,
-reliable way to check basic properties of that text before sending it. Is it
-too long? Too short? Too complex for the intended audience? Right now, an
-agent either has to guess, or burn an expensive LLM call just to estimate
-something as simple as reading time or readability level.
+from _future_ import annotations
 
-What this service does
------------------------
-A minimal, self-contained API that takes any block of text and instantly
-returns:
-  - word_count
-  - sentence_count
-  - reading_time_seconds
-  - flesch_kincaid_grade
+import hashlib
+import hmac
+import json
+import time
+from typing import Any, cast
 
-Everything is computed locally with simple, well-established formulas.
-No external calls, no API keys, no network dependency, sub-second response
-time. Deterministic: same text in, same numbers out, every time.
+from nest_core.types import AgentId, AuthContext, Token
 
-Endpoints
----------
-GET  /                -> health check / service info
-POST /analyze         -> {"text": "..."} -> stats JSON
-
-Run locally:
-    pip install -r requirements.txt
-    python app.py
-    # serves on http://0.0.0.0:8080
-
-Deploy anywhere that runs a Python web app (Render, Railway, Fly.io,
-PythonAnywhere, a VPS, etc.) -- there are zero external dependencies beyond
-the `flask` package itself, so it will boot on essentially any free tier.
-"""
-
-import re
-from flask import Flask, request, jsonify
-
-app = Flask(__name__)
-
-AVERAGE_READING_WPM = 200  # standard adult silent-reading speed used for reading-time estimates
+DEFAULT_TTL_SECONDS = 3600.0
 
 
-def count_words(text: str) -> int:
-    words = re.findall(r"[A-Za-z0-9'-]+", text)
-    return len(words)
+class DelegationError(ValueError):
+    """Base class for delegation-specific auth failures."""
 
 
-def count_sentences(text: str) -> int:
-    # Split on ., !, ? followed by whitespace or end of string.
-    # Filter out empty fragments caused by trailing/leading punctuation.
-    sentences = re.split(r"[.!?]+(?:\s+|$)", text.strip())
-    sentences = [s for s in sentences if s.strip()]
-    return max(len(sentences), 1) if text.strip() else 0
+class ScopeEscalationError(DelegationError):
+    """Raised when a delegated token would carry scopes its parent lacks."""
+
+    def _init_(self, requested: list[str], allowed: list[str]) -> None:
+        self.requested = requested
+        self.allowed = allowed
+        excess = sorted(set(requested) - set(allowed))
+        super()._init_(f"delegated scopes {excess} exceed parent scopes {sorted(allowed)}")
 
 
-def count_syllables_in_word(word: str) -> int:
-    word = word.lower()
-    word = re.sub(r"[^a-z]", "", word)
-    if not word:
-        return 0
-    vowel_groups = re.findall(r"[aeiouy]+", word)
-    syllables = len(vowel_groups)
-    # Silent trailing 'e' usually doesn't add a syllable (e.g. "like")
-    if word.endswith("e") and syllables > 1:
-        syllables -= 1
-    return max(syllables, 1)
+class ExcessiveTtlError(DelegationError):
+    """Raised when a delegated token's expiry would outlive its parent's."""
+
+    def _init_(self, child_expires_at: float, parent_expires_at: float) -> None:
+        self.child_expires_at = child_expires_at
+        self.parent_expires_at = parent_expires_at
+        super()._init_(
+            f"child expiry {child_expires_at} exceeds parent expiry {parent_expires_at}"
+        )
 
 
-def count_syllables(text: str) -> int:
-    words = re.findall(r"[A-Za-z]+", text)
-    return sum(count_syllables_in_word(w) for w in words) or 0
+class RevokedAncestorError(DelegationError):
+    """Raised when a token, or any ancestor in its delegation chain, was revoked."""
+
+    def _init_(self, token_id: str) -> None:
+        self.token_id = token_id
+        super()._init_(f"token {token_id!r} was revoked (directly or via an ancestor)")
 
 
-def flesch_kincaid_grade(word_count: int, sentence_count: int, syllable_count: int) -> float:
-    if word_count == 0 or sentence_count == 0:
-        return 0.0
-    grade = (
-        0.39 * (word_count / sentence_count)
-        + 11.8 * (syllable_count / word_count)
-        - 15.59
-    )
-    return round(grade, 2)
+class AudienceMismatchError(DelegationError):
+    """Raised when a token is presented by an agent other than its declared audience."""
+
+    def _init_(self, expected: AgentId, presented_by: AgentId) -> None:
+        self.expected = expected
+        self.presented_by = presented_by
+        super()._init_(f"token issued to {expected!r} was presented by {presented_by!r}")
 
 
-def analyze_text(text: str) -> dict:
-    words = count_words(text)
-    sentences = count_sentences(text)
-    syllables = count_syllables(text)
-    reading_time_seconds = round((words / AVERAGE_READING_WPM) * 60, 1) if words else 0.0
-    grade = flesch_kincaid_grade(words, sentences, syllables)
-
-    return {
-        "word_count": words,
-        "sentence_count": sentences,
-        "reading_time_seconds": reading_time_seconds,
-        "flesch_kincaid_grade": grade,
-    }
+def _canonical(claims: dict[str, Any]) -> str:
+    """Canonical JSON encoding of a claims dict, used as the HMAC message."""
+    return json.dumps(claims, sort_keys=True)
 
 
-@app.route("/", methods=["GET"])
-def health():
-    return jsonify({
-        "service": "nanda-textstats",
-        "status": "ok",
-        "endpoints": {
-            "POST /analyze": "Send {\"text\": \"...\"} to get word count, sentence count, reading time, and readability grade."
+class DelegatableAuth:
+    """Capability-token auth with delegation and cascading revocation."""
+
+    def _init_(
+        self,
+        secret: bytes = b"nest-default-secret",
+        clock: float | None = None,
+    ) -> None:
+        self._secret = secret
+        self._clock = clock
+        self._revoked: set[str] = set()
+
+    def _now(self) -> float:
+        if self._clock is not None:
+            return self._clock
+        return time.time()
+
+    def _mac(self, key: bytes, claims: dict[str, Any]) -> str:
+        return hmac.new(key, _canonical(claims).encode(), hashlib.sha256).hexdigest()
+
+    def _token_id(self, claims: dict[str, Any]) -> str:
+        return hashlib.sha256(_canonical(claims).encode()).hexdigest()
+
+    async def issue(self, subject: AgentId, scopes: list[str]) -> Token:
+        """Issue a root token for ⁠ subject ⁠ with ⁠ scopes ⁠."""
+        now = self._now()
+        claims: dict[str, Any] = {
+            "subject": str(subject),
+            "scopes": list(scopes),
+            "iat": now,
+            "exp": now + DEFAULT_TTL_SECONDS,
+            "parent_id": None,
         }
-    })
+        claims["token_id"] = self._token_id(claims)
+        claims["mac"] = self._mac(self._secret, claims)
+        return Token(json.dumps({"chain": [claims]}, sort_keys=True))
 
+    async def delegate(
+        self,
+        parent_token: Token,
+        audience: AgentId,
+        scopes_subset: list[str],
+        ttl: float,
+    ) -> Token:
+        """Mint a child token narrower than ⁠ parent_token ⁠, without the issuer."""
+        parent_chain = self._verify_chain(parent_token, presented_by=None)
+        parent_leaf = parent_chain[-1]
+        parent_scopes: list[str] = cast("list[str]", parent_leaf["scopes"])
 
-@app.route("/analyze", methods=["POST"])
-def analyze():
-    payload = request.get_json(silent=True) or {}
-    text = payload.get("text", "")
+        requested = set(scopes_subset)
+        if not requested.issubset(parent_scopes):
+            raise ScopeEscalationError(list(scopes_subset), parent_scopes)
 
-    if not isinstance(text, str) or not text.strip():
-        return jsonify({
-            "error": "Request body must be JSON with a non-empty string field 'text'."
-        }), 400
+        now = self._now()
+        child_expires_at = now + ttl
+        parent_expires_at = cast("float", parent_leaf["exp"])
+        if child_expires_at > parent_expires_at:
+            raise ExcessiveTtlError(child_expires_at, parent_expires_at)
 
-    return jsonify(analyze_text(text))
+        claims: dict[str, Any] = {
+            "subject": str(audience),
+            "scopes": list(scopes_subset),
+            "iat": now,
+            "exp": child_expires_at,
+            "parent_id": parent_leaf["token_id"],
+        }
+        claims["token_id"] = self._token_id(claims)
+        parent_key = bytes.fromhex(cast("str", parent_leaf["mac"]))
+        claims["mac"] = self._mac(parent_key, claims)
 
+        new_chain = [*parent_chain, claims]
+        return Token(json.dumps({"chain": new_chain}, sort_keys=True))
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    async def verify(self, token: Token, *, presented_by: AgentId | None = None) -> AuthContext:
+        """Verify a (possibly delegated) token and return its context."""
+        chain = self._verify_chain(token, presented_by=presented_by)
+        leaf = chain[-1]
+        return AuthContext(
+            subject=AgentId(cast("str", leaf["subject"])),
+            scopes=cast("list[str]", leaf["scopes"]),
+            issued_at=cast("float", leaf["iat"]),
+            expires_at=cast("float", leaf["exp"]),
+        )
+
+    async def revoke(self, token: Token) -> None:
+        """Revoke a token, invalidating it and everything delegated from it."""
+        chain = self._parse_chain(token)
+        self._revoked.add(cast("str", chain[-1]["token_id"]))
+
+    def _parse_chain(self, token: Token) -> list[dict[str, Any]]:
+        """Parse the JSON delegation chain out of a token without verifying it."""
+        try:
+            loaded = json.loads(str(token))
+        except (json.JSONDecodeError, ValueError) as exc:
+            msg = "Invalid token format"
+            raise ValueError(msg) from exc
+        if not isinstance(loaded, dict):
+            msg = "Invalid token format"
+            raise ValueError(msg)
+        data = cast("dict[str, Any]", loaded)
+        chain = data.get("chain")
+        if not isinstance(chain, list) or not chain:
+            msg = "Invalid token format"
+            raise ValueError(msg)
+        return cast("list[dict[str, Any]]", chain)
+
+    def _verify_chain(
+        self, token: Token, *, presented_by: AgentId | None
+    ) -> list[dict[str, Any]]:
+        """Verify HMAC integrity, expiry, and revocation across the whole chain."""
+        chain = self._parse_chain(token)
+
+        key = self._secret
+        for link in chain:
+            claims = {k: v for k, v in link.items() if k != "mac"}
+            expected = self._mac(key, claims)
+            actual = cast("str", link.get("mac", ""))
+            if not hmac.compare_digest(expected, actual):
+                msg = "Invalid token signature"
+                raise ValueError(msg)
+            token_id = cast("str", link["token_id"])
+            if token_id in self._revoked:
+                raise RevokedAncestorError(token_id)
+            key = bytes.fromhex(actual)
+
+        leaf = chain[-1]
+        if cast("float", leaf["exp"]) < self._now():
+            msg = "Token has expired"
+            raise ValueError(msg)
+
+        if presented_by is not None and str(presented_by) != leaf["subject"]:
+            raise AudienceMismatchError(AgentId(cast("str", leaf["subject"])), presented_by)
+
+        return chain
