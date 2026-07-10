@@ -39,10 +39,10 @@ objective properties above.
 ## Base URL
 
 ```
-https://<YOUR-DEPLOYED-URL>
+https://https://railway.com/project/e782e913-5f5d-475f-90fd-8f5924a0e9bc/service/54dd316f-320b-4fce-b11b-d1a14bb312f7?environmentId=cf7066e6-3191-4937-87f6-d10bcb37de21/>
 ```
 
-Replace `<YOUR-DEPLOYED-URL>` with wherever this service is hosted (see
+Replace `<https://railway.com/project/e782e913-5f5d-475f-90fd-8f5924a0e9bc/service/54dd316f-320b-4fce-b11b-d1a14bb312f7?environmentId=cf7066e6-3191-4937-87f6-d10bcb37de21>` with wherever this service is hosted (see
 `README.md` in this repo for one-click deploy instructions to Render,
 Railway, or Fly.io). Once deployed, put the real URL here so agents reading
 this file have a working base URL with no placeholders.
@@ -94,7 +94,7 @@ Analyzes a block of text and returns its stats.
 
 ### curl
 ```bash
-curl -X POST https://<YOUR-DEPLOYED-URL>/analyze \
+curl -X POST https://https://railway.com/project/e782e913-5f5d-475f-90fd-8f5924a0e9bc/service/54dd316f-320b-4fce-b11b-d1a14bb312f7?environmentId=cf7066e6-3191-4937-87f6-d10bcb37de21/analyze \
   -H "Content-Type: application/json" \
   -d '{"text": "The cat sat on the mat. It was a sunny day."}'
 ```
@@ -104,7 +104,7 @@ curl -X POST https://<YOUR-DEPLOYED-URL>/analyze \
 import requests
 
 resp = requests.post(
-    "https://<YOUR-DEPLOYED-URL>/analyze",
+    "https://https://railway.com/project/e782e913-5f5d-475f-90fd-8f5924a0e9bc/service/54dd316f-320b-4fce-b11b-d1a14bb312f7?environmentId=cf7066e6-3191-4937-87f6-d10bcb37de21/analyze",
     json={"text": "The cat sat on the mat. It was a sunny day."}
 )
 stats = resp.json()
@@ -113,7 +113,7 @@ print(stats["word_count"], stats["flesch_kincaid_grade"])
 
 ### JavaScript
 ```javascript
-const resp = await fetch("https://<YOUR-DEPLOYED-URL>/analyze", {
+const resp = await fetch("https://https://railway.com/project/e782e913-5f5d-475f-90fd-8f5924a0e9bc/service/54dd316f-320b-4fce-b11b-d1a14bb312f7?environmentId=cf7066e6-3191-4937-87f6-d10bcb37de21/analyze", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({ text: "The cat sat on the mat. It was a sunny day." })
