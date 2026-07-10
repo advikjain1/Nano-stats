@@ -195,3 +195,21 @@ class DelegatableAuth:
             raise AudienceMismatchError(AgentId(cast("str", leaf["subject"])), presented_by)
 
         return chain
+        # --- WEBSERVER WRAPPER FOR RAILWAY ---
+import os
+from fastapi import FastAPI
+
+app = FastAPI()
+auth_system = DelegatableAuth()  # Initializes your class instance
+
+@app.get("/health")
+def health():
+    return {"status": "healthy", "plugin": "delegatable-auth"}
+
+# You can add more routing endpoints here later if your assignment needs them!
+
+if _name_ == "_main_":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
+
