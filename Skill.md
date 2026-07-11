@@ -48,4 +48,4 @@ An autonomous agent economy cannot scale if bots must constantly trust each othe
 
 •⁠  ⁠Granular, Not Universal: This skill strictly issues temporary task-specific access. It does not grant permanent administrative access to the parent agent's main node or full asset portfolio.
 •⁠  ⁠Cryptographic Truth: Validation is based entirely on mathematical zero-knowledge and public-key primitives contained inside nest_core. It does not rely on human passwords or centralized identity databases.
-•⁠  ⁠Production Ready: Fully decoupled from local developer environments, operating natively in the cloud via Railway, and fully visible to NANDA Town grading bots via this registry.
+•⁠  ⁠Production Ready: Fully decoupled from local developer environments, operating natively in the cloud via Railway, and fully visible to NANDA Town grading bots via this registry. (Also checkout the endpoints file for the endpoint URL)
