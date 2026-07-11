@@ -1,0 +1,2 @@
+GET https://nano-stats-production.up.railway.app/health
+POST https://nano-stats-production.up.railway.app/verify
