@@ -9,8 +9,6 @@ Never hand your master credit card to a helper agent. Issue a restricted, crypto
 
 No keys, no configuration, no human required. Run the demo, check the cryptographically signed token, and inspect the validation response:
 
-curl "https://YOUR-RAILWAY-APP-URL.up.railway.app/health"
-
 Self-check: Confirm the response returns a status: healthy along with the plugin: delegatable-auth field. If it does not, stop and report—the verification engine is offline or unlinked.
 
 ## Composition — one skill, three services (A -> B -> C)
