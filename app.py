@@ -197,14 +197,25 @@ class DelegatableAuth:
         return chain
         # --- WEBSERVER WRAPPER FOR RAILWAY ---
 import os
+from pathlib import Path
+
 from fastapi import FastAPI
+from fastapi.responses import PlainTextResponse
 
 app = FastAPI()
 auth_system = DelegatableAuth()  # Initializes your class instance
 
+SKILL_MD_PATH = Path(__file__).parent / "Skill.md"
+
+
 @app.get("/health")
 def health():
     return {"status": "healthy", "plugin": "delegatable-auth"}
+
+
+@app.get("/SKILL.md", response_class=PlainTextResponse)
+def skill_md():
+    return SKILL_MD_PATH.read_text()
 
 # You can add more routing endpoints here later if your assignment needs them!
 
