@@ -199,8 +199,9 @@ class DelegatableAuth:
 import os
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
+from pydantic import BaseModel
 
 app = FastAPI()
 auth_system = DelegatableAuth()  # Initializes your class instance
@@ -216,6 +217,27 @@ def health():
 @app.get("/SKILL.md", response_class=PlainTextResponse)
 def skill_md():
     return SKILL_MD_PATH.read_text()
+
+
+class VerifyRequest(BaseModel):
+    token: str
+    presented_by: str | None = None
+
+
+@app.post("/verify")
+async def verify(request: VerifyRequest):
+    """Validate a (possibly delegated) Limited Access Card and return its auth context."""
+    presented_by = AgentId(request.presented_by) if request.presented_by is not None else None
+    try:
+        ctx = await auth_system.verify(Token(request.token), presented_by=presented_by)
+    except (DelegationError, ValueError) as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    return {
+        "subject": ctx.subject,
+        "scopes": ctx.scopes,
+        "issued_at": ctx.issued_at,
+        "expires_at": ctx.expires_at,
+    }
 
 # You can add more routing endpoints here later if your assignment needs them!
 
